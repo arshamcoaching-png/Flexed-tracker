@@ -1,6 +1,6 @@
 {
   "name": "flexed-tracker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "",
   "main": "server/index.js",
   "engines": {
@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node server/index.js",
+    "postinstall": "npm rebuild better-sqlite3 --build-from-source",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
