@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["nodejs", "python3", "gcc", "gnumake"]
-
-[variables]
-# Forces better-sqlite3 to compile from source against Railway's actual
-# runtime environment, instead of using a pre-built binary that can
-# mismatch and segfault (a known issue with this package on Nixpacks).
-npm_config_build_from_source = "true"
