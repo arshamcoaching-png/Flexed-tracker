@@ -504,7 +504,9 @@ function renderSheet() {
           ${pkgsForClient.map(p => `<option value="${p.id}" ${data.package_id == p.id ? 'selected' : ''}>${fmtDate(p.purchase_date)} · ${Math.max(0, p.total_sessions - p.used_sessions)} left</option>`).join('')}
         </select>
       </div>
-      <div class="field"><label>Rate (₱)</label><input name="rate" type="number" value="${data.rate || ''}" /></div>
+      ${data.id ? `
+      <div class="field"><label>Rate (₱, optional — overrides the client's default)</label><input name="rate" type="number" value="${data.rate || ''}" /></div>
+      ` : ''}
       <div class="field"><label>Location (optional)</label><input name="location" value="${escapeHtml(data.location || '')}" /></div>
       <div class="field"><label>Notes</label><textarea name="notes">${escapeHtml(data.notes || '')}</textarea></div>
     `;
