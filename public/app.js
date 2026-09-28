@@ -93,6 +93,18 @@ function clientFrequency(clientId) {
   return completed.length / weeks;
 }
 
+function clientNextSession(clientId) {
+  return state.sessions
+    .filter(s => s.client_id === clientId && s.status === 'booked' && s.session_date >= todayISO())
+    .sort((a, b) => a.session_date.localeCompare(b.session_date))[0] || null;
+}
+
+function clientLastSession(clientId) {
+  return state.sessions
+    .filter(s => s.client_id === clientId && s.status === 'completed')
+    .sort((a, b) => b.session_date.localeCompare(a.session_date))[0] || null;
+}
+
 async function refreshSummary() {
   const summary = await api('/api/summary').catch(() => state.summary);
   setState({ summary });
@@ -275,6 +287,7 @@ function renderHome() {
 }
 
 function sessionCard(s) {
+  const canComplete = s.status === 'booked';
   return `
     <div class="card" data-session-id="${s.id}">
       <div class="card-row">
@@ -283,10 +296,22 @@ function sessionCard(s) {
           <div class="card-sub">${fmtDate(s.session_date)}${s.start_time ? ' · ' + s.start_time : ''}${s.location ? ' · ' + escapeHtml(s.location) : ''}</div>
           <span class="pill pill-${s.status}">${s.status.replace('_', ' ')}</span>
         </div>
-        <div class="card-amount">${s.rate ? fmtMoney(s.rate) : ''}</div>
+        <div class="card-side">
+          <div class="card-amount">${s.rate ? fmtMoney(s.rate) : ''}</div>
+          ${canComplete ? `<button type="button" class="btn-done" data-complete-session="${s.id}">✓ Mark done</button>` : ''}
+        </div>
       </div>
     </div>
   `;
+}
+
+async function quickCompleteSession(id) {
+  try {
+    await api(`/api/sessions/${id}`, { method: 'PUT', body: JSON.stringify({ status: 'completed' }) });
+    await loadAll();
+  } catch (err) {
+    alert(err.message);
+  }
 }
 
 function renderClients() {
@@ -298,6 +323,8 @@ function renderClients() {
       const freq = clientFrequency(c.id);
       const isOpen = state.expandedClientId === c.id;
       const pkgs = clientPackages(c.id);
+      const next = clientNextSession(c.id);
+      const last = clientLastSession(c.id);
 
       return `
       <div class="card">
@@ -305,6 +332,10 @@ function renderClients() {
           <div>
             <div class="card-title">${escapeHtml(c.name)}</div>
             <div class="card-sub">${totalSessions} completed${c.phone ? ' · ' + escapeHtml(c.phone) : ''}</div>
+            <div class="card-sub">
+              ${last ? `Last: ${fmtDate(last.session_date)}` : 'No sessions yet'}
+              ${next ? ` · Next: ${fmtDate(next.session_date)}${next.start_time ? ' ' + next.start_time : ''}` : ''}
+            </div>
             <div class="stat-row">
               ${remaining !== null ? `<span class="stat-chip">${remaining} left</span>` : ''}
               ${freq !== null ? `<span class="stat-chip">${freq.toFixed(1)}x/week</span>` : ''}
@@ -387,11 +418,13 @@ function renderCalendar() {
     const iso = `${year}-${pad(month + 1)}-${pad(day)}`;
     const isToday = iso === todayISO();
     const isSelected = iso === state.selectedDay;
-    const has = sessionsByDate[iso] && sessionsByDate[iso].length;
+    const daySessions = sessionsByDate[iso] || [];
+    const statusesPresent = ['completed', 'booked', 'cancelled', 'no_show']
+      .filter(st => daySessions.some(s => s.status === st));
     cells.push(`
       <button class="cal-cell ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}" data-day="${iso}">
         <span>${day}</span>
-        ${has ? '<span class="cal-dot"></span>' : ''}
+        ${statusesPresent.length ? `<span class="cal-dots">${statusesPresent.map(st => `<span class="cal-dot cal-dot-${st}"></span>`).join('')}</span>` : ''}
       </button>
     `);
   }
@@ -404,7 +437,13 @@ function renderCalendar() {
     <div class="cal-header">
       <button class="cal-nav-btn" id="cal-prev">‹</button>
       <div class="month-label">${monthLabel}</div>
+      <button class="link-btn" id="cal-today">Today</button>
       <button class="cal-nav-btn" id="cal-next">›</button>
+    </div>
+    <div class="cal-legend">
+      <span><span class="cal-dot cal-dot-booked"></span> Booked</span>
+      <span><span class="cal-dot cal-dot-completed"></span> Completed</span>
+      <span><span class="cal-dot cal-dot-cancelled"></span> Cancelled/No-show</span>
     </div>
     <div class="cal-grid">
       ${dow.map(x => `<div class="cal-dow">${x}</div>`).join('')}
@@ -436,6 +475,11 @@ function renderSheet() {
   } else if (type === 'session') {
     title = data.id ? 'Edit Session' : 'Log Session';
     const pkgsForClient = data.client_id ? clientPackages(Number(data.client_id)) : [];
+    const sessionDate = data.session_date || todayISO();
+    // New sessions default to "Completed" for today/past dates (the common
+    // case of logging a session that just happened), and "Booked" for
+    // future dates.
+    const defaultStatus = data.status || (sessionDate <= todayISO() ? 'completed' : 'booked');
     body = `
       <div class="field"><label>Client</label>
         <select name="client_id" id="session-client-select" required>
@@ -443,14 +487,14 @@ function renderSheet() {
           ${state.clients.map(c => `<option value="${c.id}" ${data.client_id == c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
         </select>
       </div>
-      <div class="field"><label>Date</label><input name="session_date" type="date" required value="${data.session_date || todayISO()}" /></div>
+      <div class="field"><label>Date</label><input name="session_date" type="date" required value="${sessionDate}" /></div>
       <div class="field"><label>Time (optional)</label><input name="start_time" type="time" value="${data.start_time || ''}" /></div>
       <div class="field"><label>Status</label>
         <select name="status">
-          <option value="completed" ${data.status === 'completed' ? 'selected' : ''}>Completed</option>
-          <option value="booked" ${(!data.status || data.status === 'booked') ? 'selected' : ''}>Booked / Upcoming</option>
-          <option value="cancelled" ${data.status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
-          <option value="no_show" ${data.status === 'no_show' ? 'selected' : ''}>No-show</option>
+          <option value="completed" ${defaultStatus === 'completed' ? 'selected' : ''}>Completed</option>
+          <option value="booked" ${defaultStatus === 'booked' ? 'selected' : ''}>Booked / Upcoming</option>
+          <option value="cancelled" ${defaultStatus === 'cancelled' ? 'selected' : ''}>Cancelled</option>
+          <option value="no_show" ${defaultStatus === 'no_show' ? 'selected' : ''}>No-show</option>
         </select>
       </div>
       <div class="field" id="session-package-field">
@@ -622,6 +666,12 @@ function bindContentEvents() {
       if (s) setState({ sheet: { type: 'session', data: { ...s } } });
     });
   });
+  document.querySelectorAll('[data-complete-session]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      quickCompleteSession(el.dataset.completeSession);
+    });
+  });
   document.querySelectorAll('[data-client-toggle]').forEach(el => {
     el.addEventListener('click', () => {
       const id = Number(el.dataset.clientToggle);
@@ -670,6 +720,10 @@ function bindContentEvents() {
     const d = new Date(state.calDate);
     d.setMonth(d.getMonth() + 1);
     setState({ calDate: d });
+  });
+  const todayBtn = document.getElementById('cal-today');
+  if (todayBtn) todayBtn.addEventListener('click', () => {
+    setState({ calDate: new Date(), selectedDay: todayISO() });
   });
   document.querySelectorAll('[data-day]').forEach(el => {
     el.addEventListener('click', () => {
