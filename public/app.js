@@ -673,8 +673,18 @@ function weeklyDatesBetween(startISO, endISO) {
   return dates;
 }
 
+let sheetBusy = false;
+
 async function handleSheetSubmit(e) {
   e.preventDefault();
+  // Guards against double-submits: a fast double-tap on mobile (or the
+  // form re-submitting while the first request is still in flight) was
+  // creating the same session twice.
+  if (sheetBusy) return;
+  sheetBusy = true;
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Saving…'; }
+
   const { type, data } = state.sheet;
   const fd = new FormData(e.target);
   const payload = Object.fromEntries(fd.entries());
@@ -688,8 +698,7 @@ async function handleSheetSubmit(e) {
         await api(`/api/sessions/${data.id}`, { method: 'PUT', body: JSON.stringify(payload) });
       } else if (payload.repeat_weekly) {
         if (!payload.repeat_until) {
-          alert('Pick an end date for the recurring sessions.');
-          return;
+          throw new Error('Pick an end date for the recurring sessions.');
         }
         const dates = weeklyDatesBetween(payload.session_date, payload.repeat_until);
         const base = { ...payload };
@@ -715,12 +724,17 @@ async function handleSheetSubmit(e) {
     await loadAll();
   } catch (err) {
     alert(err.message);
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Save'; }
+  } finally {
+    sheetBusy = false;
   }
 }
 
 async function handleSheetDelete() {
+  if (sheetBusy) return;
   const { type, data } = state.sheet;
   if (!confirm('Are you sure?')) return;
+  sheetBusy = true;
   try {
     if (type === 'client') await api(`/api/clients/${data.id}`, { method: 'DELETE' });
     else if (type === 'session') await api(`/api/sessions/${data.id}`, { method: 'DELETE' });
@@ -730,6 +744,8 @@ async function handleSheetDelete() {
     await loadAll();
   } catch (err) {
     alert(err.message);
+  } finally {
+    sheetBusy = false;
   }
 }
 
