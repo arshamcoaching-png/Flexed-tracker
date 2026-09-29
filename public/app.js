@@ -75,10 +75,21 @@ function clientPackages(clientId) {
   return state.packages.filter(p => p.client_id === clientId);
 }
 
+// The client's most recently purchased package — "remaining sessions" is
+// tracked against this one only, not summed across every package they've
+// ever bought (an old, already-used-up package shouldn't inflate or
+// confuse the current count).
+function clientCurrentPackage(clientId) {
+  const pkgs = clientPackages(clientId)
+    .slice()
+    .sort((a, b) => b.purchase_date.localeCompare(a.purchase_date) || b.id - a.id);
+  return pkgs[0] || null;
+}
+
 function clientRemainingSessions(clientId) {
-  const pkgs = clientPackages(clientId);
-  if (!pkgs.length) return null;
-  return pkgs.reduce((sum, p) => sum + Math.max(0, p.total_sessions - p.used_sessions), 0);
+  const pkg = clientCurrentPackage(clientId);
+  if (!pkg) return null;
+  return Math.max(0, pkg.total_sessions - pkg.used_sessions);
 }
 
 function clientFrequency(clientId) {
@@ -323,6 +334,7 @@ function renderClients() {
       const freq = clientFrequency(c.id);
       const isOpen = state.expandedClientId === c.id;
       const pkgs = clientPackages(c.id);
+      const currentPkg = clientCurrentPackage(c.id);
       const next = clientNextSession(c.id);
       const last = clientLastSession(c.id);
 
@@ -353,7 +365,7 @@ function renderClients() {
           <div class="pkg-list">
             ${pkgs.map(p => `
               <div class="pkg-row" data-package-id="${p.id}">
-                <span>${fmtDate(p.purchase_date)} · ${p.total_sessions} sessions${p.price ? ' · ' + fmtMoney(p.price) : ''}</span>
+                <span>${fmtDate(p.purchase_date)} · ${p.total_sessions} sessions${p.price ? ' · ' + fmtMoney(p.price) : ''}${currentPkg && p.id === currentPkg.id ? ' <strong>(current)</strong>' : ''}</span>
                 <span class="pkg-remaining">${Math.max(0, p.total_sessions - p.used_sessions)} left</span>
               </div>
             `).join('')}
@@ -475,6 +487,7 @@ function renderSheet() {
   } else if (type === 'session') {
     title = data.id ? 'Edit Session' : 'Log Session';
     const pkgsForClient = data.client_id ? clientPackages(Number(data.client_id)) : [];
+    const currentPkg = data.client_id ? clientCurrentPackage(Number(data.client_id)) : null;
     const sessionDate = data.session_date || todayISO();
     // New sessions default to "Completed" for today/past dates (the common
     // case of logging a session that just happened), and "Booked" for
@@ -489,7 +502,17 @@ function renderSheet() {
       </div>
       <div class="field"><label>Date</label><input name="session_date" type="date" required value="${sessionDate}" /></div>
       <div class="field"><label>Time (optional)</label><input name="start_time" type="time" value="${data.start_time || ''}" /></div>
-      <div class="field"><label>Status</label>
+      ${!data.id ? `
+      <div class="field checkbox-field">
+        <label><input type="checkbox" name="repeat_weekly" id="repeat-weekly-checkbox" ${data.repeat_weekly ? 'checked' : ''} /> Repeat weekly, same day &amp; time</label>
+      </div>
+      <div class="field" id="repeat-until-field" style="display:${data.repeat_weekly ? '' : 'none'};">
+        <label>Repeat until (can be before or after today — covers past and future)</label>
+        <input name="repeat_until" type="date" id="repeat-until-input" value="${data.repeat_until || ''}" />
+      </div>
+      ` : ''}
+      <div class="field" id="session-status-field" style="display:${data.repeat_weekly ? 'none' : ''};">
+        <label>Status</label>
         <select name="status">
           <option value="completed" ${defaultStatus === 'completed' ? 'selected' : ''}>Completed</option>
           <option value="booked" ${defaultStatus === 'booked' ? 'selected' : ''}>Booked / Upcoming</option>
@@ -497,11 +520,12 @@ function renderSheet() {
           <option value="no_show" ${defaultStatus === 'no_show' ? 'selected' : ''}>No-show</option>
         </select>
       </div>
+      ${!data.id ? `<p class="field-hint" id="repeat-status-hint" style="display:${data.repeat_weekly ? '' : 'none'};">Each date is set automatically: Completed for today/past, Booked for future.</p>` : ''}
       <div class="field" id="session-package-field">
         <label>Deduct from package (optional)</label>
         <select name="package_id" id="session-package-select">
           <option value="">None — pay per session</option>
-          ${pkgsForClient.map(p => `<option value="${p.id}" ${data.package_id == p.id ? 'selected' : ''}>${fmtDate(p.purchase_date)} · ${Math.max(0, p.total_sessions - p.used_sessions)} left</option>`).join('')}
+          ${pkgsForClient.map(p => `<option value="${p.id}" ${data.package_id == p.id ? 'selected' : ''}>${fmtDate(p.purchase_date)} · ${Math.max(0, p.total_sessions - p.used_sessions)} left${currentPkg && p.id === currentPkg.id ? ' (current)' : ''}</option>`).join('')}
         </select>
       </div>
       ${data.id ? `
@@ -613,9 +637,40 @@ function bindSheetEvents() {
       const updated = Object.fromEntries(fd.entries());
       updated.client_id = e.target.value;
       updated.package_id = '';
+      updated.repeat_weekly = form.repeat_weekly && form.repeat_weekly.checked ? 'on' : '';
       setState({ sheet: { type: 'session', data: { ...state.sheet.data, ...updated } } });
     });
   }
+
+  const repeatCheckbox = document.getElementById('repeat-weekly-checkbox');
+  if (repeatCheckbox) {
+    repeatCheckbox.addEventListener('change', (e) => {
+      const show = e.target.checked;
+      const untilField = document.getElementById('repeat-until-field');
+      const statusField = document.getElementById('session-status-field');
+      const statusHint = document.getElementById('repeat-status-hint');
+      if (untilField) untilField.style.display = show ? '' : 'none';
+      if (statusField) statusField.style.display = show ? 'none' : '';
+      if (statusHint) statusHint.style.display = show ? '' : 'none';
+    });
+  }
+}
+
+// Every Nth day from `startISO` to `endISO` (inclusive), regardless of
+// which one is earlier — so a recurring series can be entered as
+// "from a past date to a future date" in either order. Capped so a typo
+// (e.g. a year picked by mistake) can't fire off hundreds of requests.
+function weeklyDatesBetween(startISO, endISO) {
+  let start = new Date(startISO + 'T00:00:00');
+  let end = new Date(endISO + 'T00:00:00');
+  if (end < start) { const tmp = start; start = end; end = tmp; }
+  const dates = [];
+  const cur = new Date(start);
+  while (cur <= end && dates.length < 156) { // ~3 years of weekly dates
+    dates.push(isoDate(cur));
+    cur.setDate(cur.getDate() + 7);
+  }
+  return dates;
 }
 
 async function handleSheetSubmit(e) {
@@ -629,8 +684,27 @@ async function handleSheetSubmit(e) {
       if (data.id) await api(`/api/clients/${data.id}`, { method: 'PUT', body: JSON.stringify(payload) });
       else await api('/api/clients', { method: 'POST', body: JSON.stringify(payload) });
     } else if (type === 'session') {
-      if (data.id) await api(`/api/sessions/${data.id}`, { method: 'PUT', body: JSON.stringify(payload) });
-      else await api('/api/sessions', { method: 'POST', body: JSON.stringify(payload) });
+      if (data.id) {
+        await api(`/api/sessions/${data.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      } else if (payload.repeat_weekly) {
+        if (!payload.repeat_until) {
+          alert('Pick an end date for the recurring sessions.');
+          return;
+        }
+        const dates = weeklyDatesBetween(payload.session_date, payload.repeat_until);
+        const base = { ...payload };
+        delete base.repeat_weekly;
+        delete base.repeat_until;
+        delete base.status; // recomputed per date below
+        for (const d of dates) {
+          await api('/api/sessions', {
+            method: 'POST',
+            body: JSON.stringify({ ...base, session_date: d, status: d <= todayISO() ? 'completed' : 'booked' }),
+          });
+        }
+      } else {
+        await api('/api/sessions', { method: 'POST', body: JSON.stringify(payload) });
+      }
     } else if (type === 'transaction') {
       await api('/api/transactions', { method: 'POST', body: JSON.stringify(payload) });
     } else if (type === 'package') {

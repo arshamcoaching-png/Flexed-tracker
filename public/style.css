@@ -67,6 +67,9 @@ input, select, textarea {
 .auth-card p.tagline { color: var(--muted); margin-top: 0; margin-bottom: 28px; }
 .field { margin-bottom: 14px; }
 .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.checkbox-field label { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
+.checkbox-field input[type="checkbox"] { width: 18px; height: 18px; }
+.field-hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 .field input {
   width: 100%;
   padding: 13px 14px;
